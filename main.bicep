@@ -540,7 +540,14 @@ var _speechServiceLocation = empty(speechServiceLocation) ? location : speechSer
 // Container vars
 // ----------------------------------------------------------------------
 
-var _containerDummyImageName = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+// Placeholder image deployed initially; replaced by the operator's real image
+// via `azd deploy`. Pinned to `aspnetapp-9.0` because:
+//   - it listens on port 8080 by default (matches our `target_port` default,
+//     so the placeholder serves a working page out of the box and lets the
+//     operator validate ingress before deploying their app);
+//   - it is published on MCR (no auth required from ACA pull egress);
+//   - the explicit tag prevents drift when Microsoft retags `:aspnetapp`.
+var _containerDummyImageName = 'mcr.microsoft.com/dotnet/samples:aspnetapp-9.0'
 
 // ----------------------------------------------------------------------
 // Networking vars
