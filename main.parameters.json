@@ -86,6 +86,7 @@
     "existingPrivateDnsZoneOdsOpsInsightsResourceId":  { "value": "${EXISTING_PRIVATE_DNS_ZONE_ODSOPSINSIGHTS_RESOURCE_ID=null}" },
     "existingPrivateDnsZoneAzureAutomationResourceId": { "value": "${EXISTING_PRIVATE_DNS_ZONE_AZUREAUTOMATION_RESOURCE_ID=null}" },
     "existingPrivateDnsZoneAppInsightsResourceId":     { "value": "${EXISTING_PRIVATE_DNS_ZONE_APPINSIGHTS_RESOURCE_ID=null}" },
+    "dnsZoneLinkSuffix":                               { "value": "${DNS_ZONE_LINK_SUFFIX=}" },
     "deployVM":                             { "value": "${DEPLOY_VM=null}" },
     "deploySoftware":                       { "value": "true" },
     "deployPostgres":                       { "value": "false" },

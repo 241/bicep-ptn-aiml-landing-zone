@@ -187,6 +187,9 @@ param vnetAddressPrefixes array = [
   '192.168.0.0/21' // 192.168.0.0 – 192.168.7.255 (2048 IPs total)
 ]
 
+@description('Gap 3 — Optional suffix appended to every Private DNS zone VNet link name created by this deployment. Set to a unique value (e.g., the spoke name or environment short-code) when multiple spokes link to the same shared Private DNS zone — without a unique suffix the link name collides and the second deployment fails. Leave empty for single-spoke or non-shared-zone deployments. Final link name: `<vnetName>-<zone-shortcode>-link<suffix>[<-byon if useExistingVNet>]`. Forbidden characters per Microsoft.Network/privateDnsZones/virtualNetworkLinks: must be 1–80 chars, alphanumeric / hyphens / underscores only.')
+param dnsZoneLinkSuffix string = ''
+
 //
 // Subnet allocations (non-overlapping, optimized for production workloads)
 // PE subnet increased to /26 to support multiple Private Endpoints without race conditions
@@ -1895,7 +1898,7 @@ resource cse 'Microsoft.Compute/virtualMachines/extensions@2024-11-01' = if (_de
 ///////////////////////////////////////////////////////////////////////////
 
 var _dnsZonesTargetRg = useExistingVNet && !sideBySideDeploy ? varExistingVnetResourceGroupName : resourceGroup().name
-var _dnsZonesLinkSuffix = useExistingVNet ? '-byon' : ''
+var _dnsZonesLinkSuffix = '${useExistingVNet ? '-byon' : ''}${empty(dnsZoneLinkSuffix) ? '' : '-${dnsZoneLinkSuffix}'}'
 
 // Gap 2 — Per-zone BYO flags (true ⇒ skip local creation for that zone).
 var _byoZoneCogSvcs        = !empty(existingPrivateDnsZoneCogSvcsResourceId ?? '')
