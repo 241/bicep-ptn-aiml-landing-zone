@@ -5,6 +5,12 @@ This format follows [Keep a Changelog](https://keepachangelog.com/) and adheres 
 
 ## [Unreleased]
 
+## [v2.0.12] - 2026-06-01
+
+### Fixed
+
+- **Jumpbox CSE disables azd first-run prompts before `azd init`**. The Windows jumpbox bootstrap now sets `AZD_SKIP_FIRST_RUN=true` before running azd commands under Custom Script Extension. This prevents `azd init` from blocking on the non-interactive "Would you like to check your Azure development tools?" first-run prompt until the watchdog times out, while preserving the `v2.0.9` bounded execution behavior.
+
 ## [v2.0.11] - 2026-06-01
 
 ### Fixed

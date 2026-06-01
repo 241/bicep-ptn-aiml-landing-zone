@@ -665,6 +665,10 @@ if ($LASTEXITCODE -ne 0) {
 write-host "Logging into Azure"
 az login --identity
 
+# CSE is non-interactive. azd first-run tooling discovery prompts otherwise
+# block `azd init` until the watchdog kills it.
+$env:AZD_SKIP_FIRST_RUN = 'true'
+
 write-host "Logging into AZD"
 $azdAuthExit = Invoke-NativeWithTimeout -FilePath $azdExe -Arguments @('auth', 'login', '--managed-identity') -TimeoutSec 180 -Label 'azd-auth-login'
 if ($azdAuthExit -ne 0) {
