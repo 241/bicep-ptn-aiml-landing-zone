@@ -292,6 +292,22 @@ function Resolve-DeployJumpbox {
     return (ConvertTo-Bool $P['networkIsolation']) -and -not $hasExisting
 }
 
+function Resolve-DeployFlag {
+    # Resolve a feature-flag parameter to a bool, honoring an explicit value and
+    # falling back to $Default when the parameter is null, empty, or still an
+    # unresolved '${VAR}' token. Mirrors the default-on/off semantics expressed
+    # in main.parameters.json (e.g. "${DEPLOY_SEARCH_SERVICE=true}").
+    param(
+        [hashtable]$P,
+        [Parameter(Mandatory)] [string]$Key,
+        [bool]$Default
+    )
+    $raw = Get-StringValue $P[$Key]
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
+    if ($raw -match '^\$\{') { return $Default }
+    return [bool](ConvertTo-Bool $raw)
+}
+
 # --------------------------------------------------------------------------
 # Deterministic topology checks (no Azure calls)
 # --------------------------------------------------------------------------
@@ -736,9 +752,14 @@ function Test-AzureResources {
 }
 
 # --------------------------------------------------------------------------
-# Resource-provider registration check. Verifies that every Azure resource
-# provider used by main.bicep is Registered. Read-only — does not attempt to
-# register providers.
+# Resource-provider registration check. Discovers the Azure resource provider
+# namespaces referenced by `resource 'Microsoft.X/...'` declarations across all
+# of the repo's *.bicep files (excluding tests/), then verifies each is
+# Registered. Providers are classified as "selected" or "optional" against the
+# effective feature flags: an unregistered provider only FAILs preflight when
+# its resource is actually selected by the current parameters; providers for
+# feature-flagged-off resources are reported as a non-blocking WARN. Read-only —
+# does not attempt to register providers.
 # --------------------------------------------------------------------------
 
 function Get-RequiredResourceProviders {
@@ -746,7 +767,8 @@ function Get-RequiredResourceProviders {
     # namespaces is derived from the Bicep tree below so it stays in sync with
     # main.bicep / modules as resources are added or removed. Unknown
     # namespaces (e.g. a future addition) still get checked — they just show
-    # a generic reason.
+    # a generic reason and are treated as optional (WARN, never FAIL).
+    param([hashtable]$P = @{})
     $reasonByNamespace = @{
         'Microsoft.Resources'            = 'Always required (resource group, deployments)'
         'Microsoft.Authorization'        = 'Role assignments and role definitions'
@@ -808,10 +830,50 @@ function Get-RequiredResourceProviders {
         foreach ($ns in $reasonByNamespace.Keys) { [void]$canonical.Add($ns) }
     }
 
+    # Map each namespace to whether the current parameters actually select it.
+    # Mirrors the feature-flag resolution used elsewhere (Test-RegionalReadiness)
+    # and the default-on/off semantics in main.parameters.json. Providers not in
+    # this map default to optional ($false) so unknown discoveries never hard-fail.
+    $deployAiFoundry         = Resolve-DeployFlag -P $P -Key 'deployAiFoundry'         -Default $true
+    $deploySpeech            = Resolve-DeployFlag -P $P -Key 'deploySpeechService'     -Default $false
+    $deployCosmos            = Resolve-DeployFlag -P $P -Key 'deployCosmosDb'          -Default $true
+    $deploySearch            = Resolve-DeployFlag -P $P -Key 'deploySearchService'     -Default $true
+    $deployBing              = Resolve-DeployFlag -P $P -Key 'deployGroundingWithBing' -Default $false
+    $deployKeyVault          = Resolve-DeployFlag -P $P -Key 'deployKeyVault'          -Default $true
+    $deployStorage           = Resolve-DeployFlag -P $P -Key 'deployStorageAccount'    -Default $true
+    $deployAppConfig         = Resolve-DeployFlag -P $P -Key 'deployAppConfig'         -Default $true
+    $deployContainerApps     = Resolve-DeployFlag -P $P -Key 'deployContainerApps'     -Default $true
+    $deployContainerEnv      = Resolve-DeployFlag -P $P -Key 'deployContainerEnv'      -Default $true
+    $deployContainerRegistry = Resolve-DeployFlag -P $P -Key 'deployContainerRegistry' -Default $true
+    $deployLogAnalytics      = Resolve-DeployFlag -P $P -Key 'deployLogAnalytics'      -Default $true
+    $deployJump              = Resolve-DeployJumpbox $P
+
+    $selectionByNamespace = @{
+        'Microsoft.Resources'            = $true
+        'Microsoft.Authorization'        = $true
+        'Microsoft.ManagedIdentity'      = $true
+        'Microsoft.Insights'             = $true
+        'Microsoft.OperationsManagement' = $true
+        'Microsoft.AlertsManagement'     = $true
+        'Microsoft.Network'              = $true
+        'Microsoft.OperationalInsights'  = $deployLogAnalytics
+        'Microsoft.Compute'              = $deployJump
+        'Microsoft.Storage'              = ($deployStorage -or $deployAiFoundry)
+        'Microsoft.KeyVault'             = $deployKeyVault
+        'Microsoft.AppConfiguration'     = $deployAppConfig
+        'Microsoft.App'                  = ($deployContainerApps -or $deployContainerEnv)
+        'Microsoft.ContainerRegistry'    = $deployContainerRegistry
+        'Microsoft.CognitiveServices'    = ($deployAiFoundry -or $deploySpeech)
+        'Microsoft.Search'               = $deploySearch
+        'Microsoft.DocumentDB'           = ($deployCosmos -or $deployAiFoundry)
+        'Microsoft.Bing'                 = $deployBing
+    }
+
     $canonical | Sort-Object | ForEach-Object {
         $ns = $_
         $reason = if ($reasonByNamespace.ContainsKey($ns)) { $reasonByNamespace[$ns] } else { 'Discovered in repository Bicep files' }
-        @{ Namespace = $ns; Reason = $reason }
+        $selected = if ($selectionByNamespace.ContainsKey($ns)) { [bool]$selectionByNamespace[$ns] } else { $false }
+        @{ Namespace = $ns; Reason = $reason; Selected = $selected }
     }
 }
 
@@ -848,6 +910,7 @@ function Get-VmSkuInfo {
 }
 
 function Test-ResourceProviders {
+    param([hashtable]$P = @{})
     if ($SkipAzureLookups) { return }
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) { return }
 
@@ -856,7 +919,7 @@ function Test-ResourceProviders {
     & az account show --output none 2>$null
     if ($LASTEXITCODE -ne 0) { return }
 
-    foreach ($entry in (Get-RequiredResourceProviders)) {
+    foreach ($entry in (Get-RequiredResourceProviders -P $P)) {
         $ns = $entry.Namespace
         $state = & az provider show --namespace $ns --query 'registrationState' -o tsv 2>$null
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
@@ -872,10 +935,20 @@ function Test-ResourceProviders {
                 -Message "Provider '$ns' is currently '$state' — wait until it reaches 'Registered' before deploying." `
                 -Hint "Re-run preflight in a minute, or block on it with: az provider register --namespace $ns --wait"
         }
-        else {
+        elseif ($entry.Selected) {
             Add-Finding -Severity FAIL -Code 'RP_NOT_REGISTERED' `
                 -Message "Provider '$ns' is '$state', not 'Registered'. Used for: $($entry.Reason)." `
                 -Hint "Run: az provider register --namespace $ns --wait"
+        }
+        else {
+            # Provider is referenced somewhere in the Bicep tree but the resource
+            # is not selected by the current parameters (feature-flagged off, or a
+            # namespace this script doesn't map). Surface it as advisory only so
+            # minimal/subset deployments (e.g. gpt-rag with Search/Cosmos/Bing
+            # disabled) don't fail preflight on providers they never deploy.
+            Add-Finding -Severity WARN -Code 'RP_NOT_REGISTERED_OPTIONAL' `
+                -Message "Provider '$ns' is '$state', not 'Registered'. Only needed if you enable: $($entry.Reason). Not selected by the current parameters, so not blocking." `
+                -Hint "If you plan to enable this feature, run: az provider register --namespace $ns --wait"
         }
     }
 }
@@ -1369,9 +1442,22 @@ function Test-RegionalReadiness {
     # Regional capacity sub-checks (folded in from
     # pipelines/tools/azure_region_capacity_checker.ps1).
     if ($deployJump -and $vmSkuInfo) {
-        # Headroom requirement = the SKU's vCPU count, against the SKU's
-        # family-specific quota counter (the bucket Azure actually debits).
-        Test-RegionalVcpuQuota -Location $location -RequiredHeadroom $vmSkuInfo.VCpus -Family $vmSkuInfo.Family
+        if ($vmSkuInfo.VCpus -gt 0) {
+            # Headroom requirement = the SKU's vCPU count, against the SKU's
+            # family-specific quota counter (the bucket Azure actually debits).
+            Test-RegionalVcpuQuota -Location $location -RequiredHeadroom $vmSkuInfo.VCpus -Family $vmSkuInfo.Family
+        }
+        else {
+            # Get-VmSkuInfo couldn't read the SKU's vCPU capability, so we can't
+            # size the headroom requirement. Don't silently skip the quota check:
+            # warn that headroom can't be verified, and still run the check with a
+            # zero requirement so an already-exhausted family quota (available
+            # <= 0) is surfaced rather than masked.
+            Add-Finding -Severity WARN -Code 'VCPU_SKU_UNKNOWN' `
+                -Message "Could not determine the vCPU count for VM SKU '$($vmSkuInfo.Name)' in '$location'; vCPU headroom cannot be verified." `
+                -Hint "Confirm the SKU is offered in the region and re-run, or check family quota manually with: az vm list-usage --location $location"
+            Test-RegionalVcpuQuota -Location $location -RequiredHeadroom 0 -Family $vmSkuInfo.Family
+        }
     }
 
     # The Cognitive Services and Azure Search REST usage APIs need an explicit
@@ -1451,7 +1537,7 @@ Test-Topology -P $effective
 Test-AllowedIpRanges -P $effective
 Test-LocalCidrSanity -P $effective
 Test-AzureResources -P $effective
-Test-ResourceProviders
+Test-ResourceProviders -P $effective
 Test-CosmosAnalyticalStorageRegionSupport -P $effective
 Test-RegionalReadiness -P $effective
 
